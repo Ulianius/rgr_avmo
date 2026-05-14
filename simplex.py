@@ -5,8 +5,8 @@ artificial_start = 0
 artificial_vars = []
 column_numbers = [] 
 problem_type = "max" 
+
 def read_problem(filename):
-    """Чтение задачи из файла"""
     global original_n, problem_type
     with open(filename, 'r') as f:
         lines = []
@@ -15,12 +15,11 @@ def read_problem(filename):
             if line:
                 lines.append(line)
     
-    # Проверяем, есть ли указание типа задачи (min/max)
     if lines and lines[-1].lower() in ["min", "max"]:
         problem_type = lines[-1].lower()
         lines = lines[:-1]
     else:
-        problem_type = "max"  # по умолчанию
+        problem_type = "max"
     
     all_rows = []
     for line in lines:
@@ -41,7 +40,6 @@ def read_problem(filename):
         A.append(coeffs)
         b.append(row[-1])
     
-    # Для задачи на max умножаем на -1, для min оставляем как есть
     if problem_type == "max":
         Z1 = [z * -1 for z in Z]
     else:
@@ -50,8 +48,15 @@ def read_problem(filename):
     original_n = len(Z1)
     return A, b, Z1
 
+def normalize_rhs(A, b):
+    for i in range(len(A)):
+        if b[i] < 0:
+            b[i] = -b[i]
+            for j in range(len(A[i])):
+                A[i][j] = -A[i][j]
+    return A, b
+
 def print_system(A, b, Z):
-    """Вывод начальных данных"""
     n = len(Z)
     m = len(A)
     
@@ -66,7 +71,7 @@ def print_system(A, b, Z):
         if Z[i] != 0:
             if i > 0 and Z[i] > 0:
                 print("+", end=" ")
-            print(f"{Z[i]}·x{i+1}", end=" ")
+            print(f"{-Z[i]}·x{i+1}", end=" ")
     print("→ max")
     
     print("\nОграничения:")
@@ -80,17 +85,18 @@ def print_system(A, b, Z):
     print("\nУсловия: x_i ≥ 0")
 
 def normalize_z_row(A, b, Z, basis_to_row):
-    """Обнуляет коэффициенты при базисных переменных в Z строке"""
     new_Z = Z[:]
     
     for var_index, row_num in basis_to_row.items():
-        if var_index < len(new_Z) - 1 and new_Z[var_index] != 0:
+        if var_index < len(new_Z) - 1 and abs(new_Z[var_index]) > 1e-10:
             coeff = new_Z[var_index]
+            
             for j in range(len(new_Z) - 1):
                 if j < len(A[row_num]):
                     new_Z[j] -= coeff * A[row_num][j]
                     if abs(new_Z[j]) < 1e-10:
                         new_Z[j] = Fraction(0)
+            
             new_Z[-1] -= coeff * b[row_num]
             if abs(new_Z[-1]) < 1e-10:
                 new_Z[-1] = Fraction(0)
@@ -98,9 +104,7 @@ def normalize_z_row(A, b, Z, basis_to_row):
     return new_Z
 
 def add_basis(A, b, Z):
-    """Добавляет искусственные переменные и создает M-строку"""
     global artificial_start, artificial_vars, column_numbers
-
     i = 0
     while i < len(A):
         all_zero = True
@@ -164,8 +168,6 @@ def add_basis(A, b, Z):
             basis_to_row[j] = one_i
     
     print(f"Найдено базисных столбцов: {len(basis_to_row)}")
-    if basis_to_row:
-        print(f"Базисные столбцы: {[f'x{column_numbers[i]}' for i in basis_to_row.keys()]}")
     
     need_basis = [i for i in range(m) if basis_rows[i] == -1]
     
@@ -190,6 +192,8 @@ def add_basis(A, b, Z):
         basis_to_row[new_var_index] = row_num
         basis_rows[row_num] = new_var_index
         artificial_vars.append(new_var_index)
+    
+    new_Z = normalize_z_row(new_A, b, new_Z, basis_to_row)
     
     basis = [-1] * m
     for var_index, row_num in basis_to_row.items():
@@ -222,11 +226,10 @@ def add_basis(A, b, Z):
     return new_A, b[:], new_Z, basis, M
 
 def delete_column(A, b, Z, M, basis, col_index):
-    """Удаляет столбец из всех массивов и обновляет базис"""
     global artificial_vars, column_numbers
     
     col_num = column_numbers[col_index]
-    print(f"  Удаляем столбец x{col_num} (индекс в матрице: {col_index})")
+    print(f"  Удаляем столбец x{col_num}")
     
     del column_numbers[col_index]
     
@@ -253,23 +256,10 @@ def delete_column(A, b, Z, M, basis, col_index):
     artificial_vars = new_artificial
 
 def matrix_basis_M(A, b, M):
-    """Выбор разрешающего столбца из M строки"""
     global column_numbers
     
     if not M:
         return None, None
-    
-    # Проверяем, есть ли отрицательный свободный член при неотрицательных коэффициентах
-    if M[-1] < 0 and abs(M[-1]) > 1e-10:
-        all_non_neg = True
-        for i in range(len(M) - 1):
-            if M[i] < 0 and abs(M[i]) > 1e-10:
-                all_non_neg = False
-                break
-        if all_non_neg:
-            print("\n Все коэффициенты M-строки не равны 0")
-            print(" Задача не имеет допустимого решения.")
-            return None, None
     
     row1 = -1
     min_neg = None
@@ -281,6 +271,11 @@ def matrix_basis_M(A, b, M):
                 row1 = i
     
     if row1 == -1:
+        if abs(M[-1]) > 1e-10:
+            print("\n M-строка не содержит отрицательных коэффициентов ")
+            print(" Задача не имеет допустимого решения (система несовместна).")
+        else:
+            print("\n M-строка обнулена!")
         return None, None
     
     print(f"\nРазрешающий столбец (M): x{column_numbers[row1]} = {M[row1]}")
@@ -311,7 +306,6 @@ def matrix_basis_M(A, b, M):
     return row1, row2
 
 def matrix_basis_Z(A, b, Z):
-    """Выбор разрешающего столбца из Z строки"""
     global column_numbers
     
     row1 = -1
@@ -352,7 +346,6 @@ def matrix_basis_Z(A, b, Z):
     return row1, row2
 
 def perform_simplex_step(A, b, Z, M, basis, row1, row2):
-    """Выполняет один шаг симплекс-метода"""
     pivot = A[row2][row1]
     
     for j in range(len(A[row2])):
@@ -403,7 +396,6 @@ def perform_simplex_step(A, b, Z, M, basis, row1, row2):
     return A, b, Z, M, new_basis
 
 def simplex_iteration(A, b, Z, M, basis, row1, row2):
-    """Одна итерация симплекс-метода"""
     global artificial_vars, column_numbers
     
     print(f"\n--- Итерация ---")
@@ -431,7 +423,6 @@ def simplex_iteration(A, b, Z, M, basis, row1, row2):
         return new_A, new_b, new_Z, M, new_basis
 
 def check_M_zero(M):
-    """Проверяет, все ли коэффициенты M строки = 0"""
     if not M:
         return True
     for i in range(len(M)):
@@ -440,14 +431,12 @@ def check_M_zero(M):
     return True
 
 def check_Z_positive(Z):
-    """Проверяет, все ли коэффициенты Z строки неотрицательные"""
     for i in range(len(Z) - 1):
         if Z[i] < 0 and abs(Z[i]) > 1e-10:
             return False
     return True
 
 def print_matrix(A, b, Z, M, basis):
-    """Вывод матрицы"""
     global column_numbers
     
     if not A or not A[0]:
@@ -457,14 +446,19 @@ def print_matrix(A, b, Z, M, basis):
     n_cols = len(A[0])
     
     print("\n      ", end="")
-    for col_num in column_numbers:
-        print(f"  x{col_num}  ", end="")
+    for j in range(n_cols):
+        if j < len(column_numbers):
+            val = column_numbers[j]
+            print(f"  x{val:<3}", end="")
+        else:
+            print(f"  x?   ", end="")
     print("  св.чл.")
-    print("    " + "-" * (n_cols * 7 + 8))
+    print("    " + "-" * (n_cols * 8 + 8))
     
     for i in range(len(A)):
         if i < len(basis) and basis[i] >= 0 and basis[i] < len(column_numbers):
-            print(f"x{column_numbers[basis[i]]} |", end="")
+            val = column_numbers[basis[i]]
+            print(f"x{val:<2}|", end="")
         else:
             print("   |", end="")
         
@@ -473,36 +467,53 @@ def print_matrix(A, b, Z, M, basis):
             if val.denominator == 1:
                 print(f" {val.numerator:>4} ", end="")
             else:
-                print(f" {val} ", end="")
-        print(f"| {b[i]}")
+                print(f" {val.numerator}/{val.denominator:<2}", end="")
+        
+        if b[i].denominator == 1:
+            print(f"| {b[i].numerator:>4}")
+        else:
+            print(f"| {b[i].numerator}/{b[i].denominator}")
     
-    print("    " + "-" * (n_cols * 7 + 8))
+    print("    " + "-" * (n_cols * 8 + 8))
     
     if Z and len(Z) > 0:
         print(" Z |", end="")
-        for i in range(len(Z)):
-            if i < n_cols:
-                val = Z[i]
+        for j in range(n_cols):
+            if j < len(Z) - 1:
+                val = Z[j]
                 if val.denominator == 1:
                     print(f" {val.numerator:>4} ", end="")
                 else:
-                    print(f" {val} ", end="")
+                    print(f" {val.numerator}/{val.denominator:<2}", end="")
             else:
-                print(f" {Z[i]} ", end="")
-        print()
-
+                print(f" {0:>4} ", end="")
+        
+        if Z[-1].denominator == 1:
+            print(f"| {Z[-1].numerator:>4}")
+        else:
+            print(f"| {Z[-1].numerator}/{Z[-1].denominator}")
+    
     if M and len(M) > 0:
         print(" M |", end="")
-        for i in range(len(M)):
-            if i < n_cols:
-                val = M[i]
+        for j in range(n_cols):
+            if j < len(M) - 1:
+                val = M[j]
                 if val.denominator == 1:
                     print(f" {val.numerator:>4} ", end="")
                 else:
-                    print(f" {val} ", end="")
+                    print(f" {val.numerator}/{val.denominator:<2}", end="")
             else:
-                print(f" {M[i]} ", end="")
-        print()
+                print(f" {0:>4} ", end="")
+        
+        if M[-1].denominator == 1:
+            print(f"| {M[-1].numerator:>4}")
+        else:
+            print(f"| {M[-1].numerator}/{M[-1].denominator}")
+
+def format_fraction(frac):
+    if frac.denominator == 1:
+        return str(frac.numerator)
+    return f"{frac.numerator}/{frac.denominator}"
 
 def solve_simplex(A, b, Z):
     """Основная функция решения симплекс-методом"""
@@ -526,7 +537,7 @@ def solve_simplex(A, b, Z):
     print("="*60)
     
     iteration = 0
-    max_iter = 10
+    max_iter = 100
     
     while not check_M_zero(M) and iteration < max_iter:
         iteration += 1
@@ -538,8 +549,6 @@ def solve_simplex(A, b, Z):
             if check_M_zero(M):
                 print("\nM СТРОКА ОБНУЛИЛАСЬ!")
             else:
-                print("\nНЕВОЗМОЖНО ОБНУЛИТЬ M-СТРОКУ!")
-                print("Задача не имеет допустимого решения.")
                 return None
             break
         
@@ -592,20 +601,22 @@ def solve_simplex(A, b, Z):
     print("="*60)
     print_matrix(new_A, new_b, new_Z, M, basis)
     
-    print("\nЗначения переменных:")
-    for i in range(original_n - 1):
+    # Сохраняем текущее решение как первую точку (X1)
+    X1 = []
+    for i in range(len(column_numbers)):
         if i in basis:
             row = basis.index(i)
-            print(f"  x{i+1} = {new_b[row]}")
+            X1.append(new_b[row])
         else:
-            print(f"  x{i+1} = 0")
+            X1.append(Fraction(0))
     
+    z_value = new_Z[-1]
     if problem_type == "max":
-        z_value = new_Z[-1]
-        print(f"\nМаксимальное значение Z = {z_value}")
+        final_z = -z_value
+        print(f"\nМаксимальное значение Z = {final_z}")
     else:
-        z_value = new_Z[-1]
-        print(f"\nМинимальное значение Z = {z_value}")
+        final_z = z_value
+        print(f"\nМинимальное значение Z = {final_z}")
     
     non_basis_zero = []
     for i in range(len(new_Z) - 1):
@@ -613,45 +624,132 @@ def solve_simplex(A, b, Z):
             non_basis_zero.append(i)
     
     if non_basis_zero:
-        print(f"\nВ Z-строке есть нулевые коэффициенты у небазисных переменных:")
-        for i in non_basis_zero:
-            print(f"   x{i+1} (коэффициент = 0)")
-        print("   Решений бесконечно много!")
-        print("\n   Общее решение (базисные переменные выражены через свободные):")
+        # Находим переменную для ввода в базис (выбираем x1 если есть)
+        free_var = None
+        for var in non_basis_zero:
+            if column_numbers[var] == 1:
+                free_var = var
+                break
+        if free_var is None:
+            free_var = non_basis_zero[0]
         
-        # Выражаем базисные переменные через небазисные
-        for row in range(len(basis)):
-            base_var = basis[row]
-            if base_var < original_n - 1:  # только исходные переменные
-                print(f"   x{base_var+1} = {new_b[row]}", end="")
-                for j in range(len(new_A[row])):
-                    if j not in basis and new_A[row][j] != 0:
-                        if new_A[row][j] < 0:
-                            print(f" + {-new_A[row][j]}*x{j+1}", end="")
-                        else:
-                            print(f" - {new_A[row][j]}*x{j+1}", end="")
-                print()
+        # Делаем копию таблицы для нахождения второй точки
+        temp_A = [row[:] for row in new_A]
+        temp_b = new_b[:]
+        temp_basis = basis[:]
         
-        print(f"\n   Свободные переменные (могут принимать любые неотрицательные значения):")
-        for i in range(original_n - 1):
-            if i not in basis:
-                print(f"   x{i+1} >= 0")
+        # Вводим свободную переменную в базис
+        row1 = free_var
+        row2 = -1
+        min_ratio = None
+        
+        for i in range(len(temp_b)):
+            if row1 < len(temp_A[i]) and temp_A[i][row1] > 0:
+                ratio = temp_b[i] / temp_A[i][row1]
+                if min_ratio is None or ratio < min_ratio:
+                    min_ratio = ratio
+                    row2 = i
+        
+        if row2 != -1:
+            # Делаем шаг симплекс-метода
+            pivot = temp_A[row2][row1]
+            for j in range(len(temp_A[row2])):
+                temp_A[row2][j] /= pivot
+            temp_b[row2] /= pivot
+            
+            for i in range(len(temp_A)):
+                if i != row2:
+                    factor = temp_A[i][row1]
+                    if factor != 0:
+                        for j in range(len(temp_A[i])):
+                            temp_A[i][j] -= factor * temp_A[row2][j]
+                        temp_b[i] -= factor * temp_b[row2]
+            
+            temp_basis[row2] = row1
+            
+            # Получаем вторую точку (X2)
+            X2 = []
+            for i in range(len(column_numbers)):
+                if i in temp_basis:
+                    row = temp_basis.index(i)
+                    X2.append(temp_b[row])
+                else:
+                    X2.append(Fraction(0))
+            
+            print("\n" + "="*60)
+            print("МНОЖЕСТВО ОПТИМАЛЬНЫХ РЕШЕНИЙ")
+            print("="*60)
+            
+            # Выводим X1 и X2
+            print(f"\nX₁ = (", end="")
+            for i in range(len(column_numbers)):
+                print(f"x{i+1}={format_fraction(X1[i])}", end="")
+                if i < len(column_numbers) - 1:
+                    print(", ", end="")
+            print(")")
+            
+            print(f"X₂ = (", end="")
+            for i in range(len(column_numbers)):
+                print(f"x{i+1}={format_fraction(X2[i])}", end="")
+                if i < len(column_numbers) - 1:
+                    print(", ", end="")
+            print(")")
+            
+            print(f"\nZ = {final_z}")
+            print("\nОбщее решение:")
+            print(f"X(λ) = λ·X₂ + (1-λ)·X₁, где λ ∈ [0, 1]")
+            
+            # Выводим в развернутом виде
+            print("\nВ развернутом виде:")
+            expr_str = "X(λ) = ("
+            for i in range(len(column_numbers)):
+                val1 = X1[i]
+                val2 = X2[i]
+                if val1 == val2:
+                    expr_str += f"x{i+1}={format_fraction(val1)}"
+                elif val1 == 0 and val2 != 0:
+                    expr_str += f"x{i+1}={format_fraction(val2)}·λ"
+                elif val2 == 0 and val1 != 0:
+                    expr_str += f"x{i+1}={format_fraction(val1)}·(1-λ)"
+                else:
+                    expr_str += f"x{i+1}={format_fraction(val1)}·(1-λ) + {format_fraction(val2)}·λ"
+                if i < len(column_numbers) - 1:
+                    expr_str += ", "
+            expr_str += ")"
+            print(expr_str)
+            print("="*60)
+        else:
+            print("\n" + "="*60)
+            print("ЕДИНСТВЕННОЕ РЕШЕНИЕ")
+            print("="*60)
+            X1_str = "X* = ("
+            for i in range(len(column_numbers)):
+                X1_str += f"x{i+1}={format_fraction(X1[i])}"
+                if i < len(column_numbers) - 1:
+                    X1_str += ", "
+            X1_str += ")"
+            print(f"\n{X1_str}")
+            print(f"Z = {final_z}")
+            print("="*60)
+    
     else:
-        print("\nРешение единственное (все коэффициенты Z-строки > 0)")
+        print("\n" + "="*60)
+        print("ЕДИНСТВЕННОЕ РЕШЕНИЕ")
+        print("="*60)
+        X1_str = "X* = ("
+        for i in range(len(column_numbers)):
+            X1_str += f"x{i+1}={format_fraction(X1[i])}"
+            if i < len(column_numbers) - 1:
+                X1_str += ", "
+        X1_str += ")"
+        print(f"\n{X1_str}")
+        print(f"Z = {final_z}")
+        print("="*60)
     
     return new_A, new_b, new_Z, basis
 
 print("ЗАДАЧА 1")
 print("="*70)
-A, b, Z = read_problem("system.txt")
-solve_simplex(A, b, Z)
-
-print("ЗАДАЧА 2")
-print("="*70)
-A, b, Z = read_problem("2.txt")
-solve_simplex(A, b, Z)
-
-print("ЗАДАЧА 3")
-print("="*70)
 A, b, Z = read_problem("1.txt")
+A, b = normalize_rhs(A, b)
 solve_simplex(A, b, Z)
